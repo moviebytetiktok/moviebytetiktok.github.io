@@ -35,8 +35,8 @@
     // Check if Web Speech API and MediaRecorder are available
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      status.textContent = 'Web Speech API is not supported in this browser.';
-      processButton.disabled = true;
+      status.textContent = 'Web Speech API not supported. Using test subtitles.';
+      console.warn('Web Speech API unavailable. Using dummy subtitles for testing.');
     } else {
       recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -58,7 +58,6 @@
         videoPlayer.style.display = 'block';
         processButton.disabled = false;
         status.textContent = 'Video loaded. Click "Process Video" to generate subtitles.';
-        // Set canvas dimensions to match video
         videoPlayer.onloadedmetadata = () => {
           canvas.width = videoPlayer.videoWidth;
           canvas.height = videoPlayer.videoHeight;
@@ -81,14 +80,14 @@
       track.mode = 'showing';
 
       // Combine video canvas stream with audio stream
-      const videoStream = canvas.captureStream(30); // 30 fps
+      const videoStream = canvas.captureStream(30);
       const audioStream = videoPlayer.captureStream ? videoPlayer.captureStream() : videoPlayer.mozCaptureStream ? videoPlayer.mozCaptureStream() : null;
       let combinedStream = videoStream;
       if (audioStream && audioStream.getAudioTracks().length > 0) {
         combinedStream = new MediaStream([...videoStream.getVideoTracks(), ...audioStream.getAudioTracks()]);
-        console.log('Audio tracks included in stream:', audioStream.getAudioTracks());
+        console.log('Audio tracks included:', audioStream.getAudioTracks());
       } else {
-        console.warn('No audio stream available or audio tracks not found.');
+        console.warn('No audio stream available.');
       }
 
       try {
@@ -117,7 +116,7 @@
           a.click();
           URL.revokeObjectURL(url);
         };
-        status.textContent = 'Subtitles generated and video recorded. Click "Download Video with Subtitles" to save.';
+        status.textContent = 'Video recorded. Click "Download Video with Subtitles" to save.';
       };
       mediaRecorder.onerror = (event) => {
         status.textContent = `MediaRecorder error: ${event.error}`;
@@ -132,69 +131,86 @@
         const currentTime = videoPlayer.currentTime;
         const activeSubtitle = subtitles.find(sub => currentTime >= sub.start && currentTime <= sub.end);
         if (activeSubtitle) {
-          ctx.font = 'bold 24px Arial';
+          ctx.font = 'bold 32px Arial';
           ctx.fillStyle = 'white';
           ctx.strokeStyle = 'black';
-          ctx.lineWidth = 3;
+          ctx.lineWidth = 4;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'bottom';
           const text = activeSubtitle.text;
           const textWidth = ctx.measureText(text).width;
-          const padding = 10;
-          const boxHeight = 40;
-          const boxY = canvas.height - boxHeight - 10;
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          const padding = 15;
+          const boxHeight = 50;
+          const boxY = canvas.height - boxHeight - 20;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
           ctx.fillRect((canvas.width - textWidth - padding * 2) / 2, boxY, textWidth + padding * 2, boxHeight);
           ctx.fillStyle = 'white';
-          ctx.strokeText(text, canvas.width / 2, canvas.height - 20);
-          ctx.fillText(text, canvas.width / 2, canvas.height - 20);
+          ctx.strokeText(text, canvas.width / 2, canvas.height - 25);
+          ctx.fillText(text, canvas.width / 2, canvas.height - 25);
           console.log('Rendering subtitle:', text, 'at time:', currentTime);
         }
         requestAnimationFrame(renderFrame);
       }
 
-      recognition.onresult = (event) => {
-        let interimTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            const startTime = videoPlayer.currentTime;
-            const endTime = startTime + 2; // Approximate duration for each subtitle
-            subtitles.push({ start: startTime, end: endTime, text: transcript });
-            addSubtitleToTrack(track, startTime, endTime, transcript);
-            console.log('Subtitle added:', transcript, 'from', startTime, 'to', endTime);
-          } else {
-            interimTranscript += transcript;
+      // Fallback: Generate dummy subtitles if no speech recognition
+      function generateDummySubtitles(duration) {
+        const interval = 5; // 5-second intervals
+        for (let i = 0; i < duration; i += interval) {
+          const subtitleText = `Test subtitle at ${i}s`;
+          subtitles.push({ start: i, end: i + interval, text: subtitleText });
+          addSubtitleToTrack(track, i, i + interval, subtitleText);
+          console.log('Added dummy subtitle:', subtitleText, 'from', i, 'to', i + interval);
+        }
+      }
+
+      if (recognition) {
+        recognition.onresult = (event) => {
+          let interimTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              const startTime = videoPlayer.currentTime;
+              const endTime = startTime + 2;
+              subtitles.push({ start: startTime, end: endTime, text: transcript });
+              addSubtitleToTrack(track, startTime, endTime, transcript);
+              console.log('Subtitle added:', transcript, 'from', startTime, 'to', endTime);
+            } else {
+              interimTranscript += transcript;
+            }
           }
-        }
-      };
+        };
 
-      recognition.onerror = (event) => {
-        status.textContent = `Error in speech recognition: ${event.error}`;
-        isProcessing = false;
-        processButton.disabled = false;
-        mediaRecorder.stop();
-      };
+        recognition.onerror = (event) => {
+          status.textContent = `Speech recognition error: ${event.error}. Using test subtitles.`;
+          console.warn('Speech recognition failed. Generating dummy subtitles.');
+          generateDummySubtitles(videoPlayer.duration || 60);
+        };
 
-      recognition.onend = () => {
-        if (isProcessing) {
-          recognition.start();
-        }
-      };
+        recognition.onend = () => {
+          if (isProcessing) {
+            recognition.start();
+          }
+        };
+      } else {
+        generateDummySubtitles(videoPlayer.duration || 60);
+      }
 
       try {
         videoPlayer.play();
-        recognition.start();
+        if (recognition) recognition.start();
         mediaRecorder.start();
         renderFrame();
         console.log('Started recording with MediaRecorder');
 
         videoPlayer.onended = () => {
-          recognition.stop();
+          if (recognition) recognition.stop();
           mediaRecorder.stop();
           isProcessing = false;
           processButton.disabled = false;
           generateVTTFile();
+          if (subtitles.length === 0) {
+            status.textContent = 'No subtitles generated. Check audio or try a different video.';
+          }
         };
       } catch (error) {
         status.textContent = `Error: ${error.message}`;
