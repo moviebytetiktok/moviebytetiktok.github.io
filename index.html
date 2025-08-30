@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Subtitle Generator</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vosk@0.3.45/vosk.js"></script>
 </head>
 <body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen">
   <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-2xl">
@@ -21,21 +22,23 @@
     const processButton = document.getElementById('processButton');
     const status = document.getElementById('status');
 
-    let recognition;
+    let model;
     let subtitles = [];
     let isProcessing = false;
 
-    // Check if Web Speech API is available
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      status.textContent = 'Web Speech API is not supported in this browser.';
-      processButton.disabled = true;
-    } else {
-      recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
+    // Load Vosk model
+    async function loadModel() {
+      status.textContent = 'Loading speech recognition model...';
+      try {
+        model = await Vosk.createModel('https://github.com/alphacep/vosk-model-small-en-us/releases/download/v0.15/vosk-model-small-en-us-0.15.zip');
+        status.textContent = 'Model loaded. Upload a video to proceed.';
+      } catch (error) {
+        status.textContent = `Error loading model: ${error.message}`;
+        processButton.disabled = true;
+      }
     }
+
+    loadModel();
 
     // Enable process button when video is selected
     videoInput.addEventListener('change', (event) => {
@@ -44,14 +47,14 @@
         const url = URL.createObjectURL(file);
         videoPlayer.src = url;
         videoPlayer.style.display = 'block';
-        processButton.disabled = false;
+        processButton.disabled = !model;
         status.textContent = 'Video loaded. Click "Process Video" to generate subtitles.';
       }
     });
 
     // Process video for subtitles
     processButton.addEventListener('click', async () => {
-      if (isProcessing) return;
+      if (isProcessing || !model) return;
       isProcessing = true;
       processButton.disabled = true;
       status.textContent = 'Processing audio for subtitles...';
@@ -60,48 +63,44 @@
       const track = videoPlayer.textTracks[0] || videoPlayer.addTextTrack('subtitles', 'English', 'en');
       track.mode = 'showing';
 
-      recognition.onresult = (event) => {
-        let interimTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            const startTime = videoPlayer.currentTime;
-            const endTime = startTime + 2; // Approximate duration for each subtitle
-            subtitles.push({ start: startTime, end: endTime, text: transcript });
-            addSubtitleToTrack(track, startTime, endTime, transcript);
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-      };
-
-      recognition.onerror = (event) => {
-        status.textContent = `Error in speech recognition: ${event.error}`;
-        isProcessing = false;
-        processButton.disabled = false;
-      };
-
-      recognition.onend = () => {
-        if (isProcessing) {
-          recognition.start(); // Restart recognition if still processing
-        }
-      };
-
       try {
-        videoPlayer.play();
-        recognition.start();
+        // Extract audio from video
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const videoFile = videoInput.files[0];
+        const arrayBuffer = await videoFile.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-        videoPlayer.onended = () => {
-          recognition.stop();
-          isProcessing = false;
-          processButton.disabled = false;
-          status.textContent = 'Subtitles generated successfully!';
-          generateVTTFile();
-        };
+        // Convert audio buffer to WAV format for Vosk
+        const wavBuffer = audioBufferToWav(audioBuffer);
+        const recognizer = new model.Recognizer({ sampleRate: audioBuffer.sampleRate });
+
+        // Process audio in chunks
+        const chunkSize = 1024 * 1024; // 1MB chunks
+        let offset = 0;
+        let currentTime = 0;
+        while (offset < wavBuffer.length) {
+          const chunk = wavBuffer.slice(offset, offset + chunkSize);
+          recognizer.acceptWaveform(chunk);
+          const result = recognizer.result();
+          if (result.text) {
+            const startTime = currentTime;
+            const endTime = currentTime + 2; // Approximate duration per subtitle
+            subtitles.push({ start: startTime, end: endTime, text: result.text });
+            addSubtitleToTrack(track, startTime, endTime, result.text);
+            currentTime += 2;
+          }
+          offset += chunkSize;
+        }
+
+        recognizer.finalize();
+        status.textContent = 'Subtitles generated successfully!';
+        generateVTTFile();
       } catch (error) {
-        status.textContent = `Error: ${error.message}`;
+        status.textContent = `Error processing audio: ${error.message}`;
+      } finally {
         isProcessing = false;
         processButton.disabled = false;
+        audioContext.close();
       }
     });
 
@@ -142,6 +141,44 @@
       const secs = Math.floor(seconds % 60);
       const millis = Math.floor((seconds % 1) * 1000);
       return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${millis.toString().padStart(3, '0')}`;
+    }
+
+    // Convert AudioBuffer to WAV (simplified, assumes mono for compatibility)
+    function audioBufferToWav(buffer) {
+      const numChannels = buffer.numberOfChannels;
+      const sampleRate = buffer.sampleRate;
+      const length = buffer.length * numChannels * 2 + 44;
+      const arrayBuffer = new ArrayBuffer(length);
+      const view = new DataView(arrayBuffer);
+
+      // Write WAV header
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, length - 8, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * numChannels * 2, true);
+      view.setUint16(32, numChannels * 2, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, buffer.length * numChannels * 2, true);
+
+      // Write PCM data
+      const channelData = buffer.getChannelData(0); // Use first channel for simplicity
+      for (let i = 0; i < buffer.length; i++) {
+        view.setInt16(44 + i * 2, channelData[i] * 0x7FFF, true);
+      }
+
+      return arrayBuffer;
+    }
+
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
     }
   </script>
 </body>
