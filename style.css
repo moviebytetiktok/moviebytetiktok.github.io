@@ -1,0 +1,19 @@
+
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0b0f17;color:#e5e7eb}
+header{padding:24px 20px;border-bottom:1px solid #1f2937;background:linear-gradient(180deg,#0f1624,#0b0f17)}
+h1{margin:0;font-weight:800;letter-spacing:.3px}
+header .tag{opacity:.8;margin-top:6px}
+main{max-width:980px;margin:20px auto;padding:0 16px}
+.card{background:#0e1623;border:1px solid #1f2937;border-radius:16px;padding:16px 16px 20px;margin-bottom:16px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+input,select,button{background:#0b1220;color:#e5e7eb;border:1px solid #1f2937;border-radius:10px;padding:10px 12px}
+input[type=number]{width:80px}
+input[type=file]{padding:8px;background:none;border:none}
+button{cursor:pointer;font-weight:600}
+button:hover{border-color:#334155;background:#0a1326}
+#clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.clip{background:#0b1220;border:1px solid #1f2937;border-radius:14px;padding:10px}
+.clip video{width:100%;border-radius:10px;display:block;background:black}
+.clip .meta{margin-top:6px;font-size:12px;opacity:.9}
+footer{max-width:980px;margin:0 auto 40px;padding:0 16px;opacity:.7}
