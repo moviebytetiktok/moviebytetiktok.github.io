@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Subtitle Generator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen">
+  <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-2xl">
+    <h1 class="text-2xl font-bold mb-4 text-center">Video Subtitle Generator</h1>
+    <input type="file" id="videoInput" accept="video/*" class="mb-4 w-full p-2 border rounded">
+    <video id="videoPlayer" controls class="w-full mb-4" style="display: none;"></video>
+    <button id="processButton" class="bg-blue-500 text-white px-4 py-2 rounded w-full hover:bg-blue-600" disabled>Process Video</button>
+    <p id="status" class="mt-4 text-center"></p>
+  </div>
+
+  <script>
+    const videoInput = document.getElementById('videoInput');
+    const videoPlayer = document.getElementById('videoPlayer');
+    const processButton = document.getElementById('processButton');
+    const status = document.getElementById('status');
+
+    let recognition;
+    let subtitles = [];
+    let isProcessing = false;
+
+    // Check if Web Speech API is available
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      status.textContent = 'Web Speech API is not supported in this browser.';
+      processButton.disabled = true;
+    } else {
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+    }
+
+    // Enable process button when video is selected
+    videoInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        const url = URL.createObjectURL(file);
+        videoPlayer.src = url;
+        videoPlayer.style.display = 'block';
+        processButton.disabled = false;
+        status.textContent = 'Video loaded. Click "Process Video" to generate subtitles.';
+      }
+    });
+
+    // Process video for subtitles
+    processButton.addEventListener('click', async () => {
+      if (isProcessing) return;
+      isProcessing = true;
+      processButton.disabled = true;
+      status.textContent = 'Processing audio for subtitles...';
+
+      subtitles = [];
+      const track = videoPlayer.textTracks[0] || videoPlayer.addTextTrack('subtitles', 'English', 'en');
+      track.mode = 'showing';
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            const startTime = videoPlayer.currentTime;
+            const endTime = startTime + 2; // Approximate duration for each subtitle
+            subtitles.push({ start: startTime, end: endTime, text: transcript });
+            addSubtitleToTrack(track, startTime, endTime, transcript);
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+      };
+
+      recognition.onerror = (event) => {
+        status.textContent = `Error in speech recognition: ${event.error}`;
+        isProcessing = false;
+        processButton.disabled = false;
+      };
+
+      recognition.onend = () => {
+        if (isProcessing) {
+          recognition.start(); // Restart recognition if still processing
+        }
+      };
+
+      try {
+        videoPlayer.play();
+        recognition.start();
+
+        videoPlayer.onended = () => {
+          recognition.stop();
+          isProcessing = false;
+          processButton.disabled = false;
+          status.textContent = 'Subtitles generated successfully!';
+          generateVTTFile();
+        };
+      } catch (error) {
+        status.textContent = `Error: ${error.message}`;
+        isProcessing = false;
+        processButton.disabled = false;
+      }
+    });
+
+    // Add subtitle to text track
+    function addSubtitleToTrack(track, start, end, text) {
+      track.addCue(new VTTCue(start, end, text));
+    }
+
+    // Generate and download VTT file
+    function generateVTTFile() {
+      let vttContent = 'WEBVTT\n\n';
+      subtitles.forEach(sub => {
+        const start = formatTime(sub.start);
+        const end = formatTime(sub.end);
+        vttContent += `${start} --> ${end}\n${sub.text}\n\n`;
+      });
+
+      const blob = new Blob([vttContent], { type: 'text/vtt' });
+      const url = URL.createObjectURL(blob);
+      const existingTrack = videoPlayer.querySelector('track');
+      if (existingTrack) {
+        existingTrack.src = url;
+      } else {
+        const trackElement = document.createElement('track');
+        trackElement.kind = 'subtitles';
+        trackElement.label = 'English';
+        trackElement.srclang = 'en';
+        trackElement.src = url;
+        trackElement.default = true;
+        videoPlayer.appendChild(trackElement);
+      }
+    }
+
+    // Format time for VTT (e.g., 00:00:00.000)
+    function formatTime(seconds) {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const secs = Math.floor(seconds % 60);
+      const millis = Math.floor((seconds % 1) * 1000);
+      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${millis.toString().padStart(3, '0')}`;
+    }
+  </script>
+</body>
+</html>
