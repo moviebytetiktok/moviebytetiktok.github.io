@@ -5,224 +5,172 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Video Subtitle Generator</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/vosk@0.3.45/vosk.js"></script>
-  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen">
   <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-2xl">
     <h1 class="text-2xl font-bold mb-4 text-center">Video Subtitle Generator</h1>
-    <input type="text" id="youtubeInput" placeholder="Enter YouTube URL (e.g., https://www.youtube.com/watch?v=videoID)" class="mb-4 w-full p-2 border rounded">
     <input type="file" id="videoInput" accept="video/*" class="mb-4 w-full p-2 border rounded">
-    <div id="videoContainer" class="w-full mb-4">
-      <video id="videoPlayer" controls class="w-full" style="display: none;"></video>
-      <div id="youtubePlayer" class="w-full aspect-video" style="display: none;"></div>
-    </div>
-    <button id="processButton" class="bg-blue-500 text-white px-4 py-2 rounded w-full hover:bg-blue-600" disabled>Process Video</button>
-    <progress id="progressBar" value="0" max="100" class="w-full h-4 mt-4" style="display: none;"></progress>
+    <video id="videoPlayer" controls class="w-full mb-4" style="display: none;"></video>
+    <canvas id="canvas" style="display: none;"></canvas>
+    <button id="processButton" class="bg-blue-500 text-white px-4 py-2 rounded w-full hover:bg-blue-600 mb-2" disabled>Process Video</button>
+    <button id="downloadButton" class="bg-green-500 text-white px-4 py-2 rounded w-full hover:bg-green-600" style="display: none;">Download Video with Subtitles</button>
     <p id="status" class="mt-4 text-center"></p>
   </div>
 
   <script>
-    let player; // YouTube player instance
     const videoInput = document.getElementById('videoInput');
-    const youtubeInput = document.getElementById('youtubeInput');
     const videoPlayer = document.getElementById('videoPlayer');
-    const youtubePlayer = document.getElementById('youtubePlayer');
-    const videoContainer = document.getElementById('videoContainer');
+    const canvas = document.getElementById('canvas');
     const processButton = document.getElementById('processButton');
-    const progressBar = document.getElementById('progressBar');
+    const downloadButton = document.getElementById('downloadButton');
     const status = document.getElementById('status');
+    const ctx = canvas.getContext('2d');
 
-    let model;
+    let recognition;
     let subtitles = [];
     let isProcessing = false;
+    let mediaRecorder;
+    let recordedChunks = [];
 
-    // Load Vosk model
-    async function loadModel() {
-      status.textContent = 'Loading speech recognition model...';
-      try {
-        model = await Vosk.createModel('https://github.com/alphacep/vosk-model-small-en-us/releases/download/v0.15/vosk-model-small-en-us-0.15.zip');
-        status.textContent = 'Model loaded. Upload a video or enter a YouTube URL.';
-        updateProcessButton();
-      } catch (error) {
-        status.textContent = `Error loading model: ${error.message}`;
-        processButton.disabled = true;
-      }
+    // Check if Web Speech API and MediaRecorder are available
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const MediaRecorder = window.MediaRecorder;
+    if (!SpeechRecognition) {
+      status.textContent = 'Web Speech API is not supported in this browser.';
+      processButton.disabled = true;
+    } else {
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
     }
 
-    loadModel();
-
-    // Initialize YouTube player
-    function onYouTubeIframeAPIReady() {
-      player = new YT.Player('youtubePlayer', {
-        height: '100%',
-        width: '100%',
-        events: {
-          'onReady': () => {
-            youtubePlayer.style.display = 'block';
-            videoPlayer.style.display = 'none';
-            updateProcessButton();
-            status.textContent = 'YouTube video loaded. Click "Process Video" to generate subtitles.';
-          },
-          'onError': (event) => {
-            status.textContent = `YouTube player error: ${event.data}`;
-            processButton.disabled = true;
-          }
-        }
-      });
-    }
-
-    // Handle YouTube URL input
-    youtubeInput.addEventListener('input', () => {
-      const url = youtubeInput.value.trim();
-      const videoId = extractYouTubeVideoId(url);
-      if (videoId) {
-        player.loadVideoById(videoId);
-        videoInput.value = ''; // Clear file input
-        videoPlayer.style.display = 'none';
-      } else if (url) {
-        status.textContent = 'Invalid YouTube URL.';
-      }
-      updateProcessButton();
-    });
-
-    // Handle video file input
+    // Enable process button when video is selected
     videoInput.addEventListener('change', (event) => {
       const file = event.target.files[0];
       if (file) {
         const url = URL.createObjectURL(file);
         videoPlayer.src = url;
         videoPlayer.style.display = 'block';
-        youtubePlayer.style.display = 'none';
-        youtubeInput.value = ''; // Clear YouTube input
-        player.stopVideo?.();
+        processButton.disabled = false;
         status.textContent = 'Video loaded. Click "Process Video" to generate subtitles.';
+        // Set canvas dimensions to match video
+        videoPlayer.onloadedmetadata = () => {
+          canvas.width = videoPlayer.videoWidth;
+          canvas.height = videoPlayer.videoHeight;
+        };
       }
-      updateProcessButton();
     });
 
-    // Enable/disable process button
-    function updateProcessButton() {
-      processButton.disabled = !model || (!videoInput.files[0] && !youtubeInput.value.trim());
-    }
-
-    // Extract YouTube video ID from URL
-    function extractYouTubeVideoId(url) {
-      const regex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/;
-      const match = url.match(regex);
-      return match ? match[1] : null;
-    }
-
-    // Process video for subtitles
+    // Process video for subtitles and record with subtitles
     processButton.addEventListener('click', async () => {
-      if (isProcessing || !model) return;
+      if (isProcessing) return;
       isProcessing = true;
       processButton.disabled = true;
-      progressBar.style.display = 'block';
-      progressBar.value = 0;
-      status.textContent = 'Processing audio for subtitles...';
+      downloadButton.style.display = 'none';
+      recordedChunks = [];
+      status.textContent = 'Processing audio and rendering subtitles...';
 
       subtitles = [];
       const track = videoPlayer.textTracks[0] || videoPlayer.addTextTrack('subtitles', 'English', 'en');
       track.mode = 'showing';
 
-      try {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        let audioBuffer;
-
-        if (videoInput.files[0]) {
-          // Local video
-          const videoFile = videoInput.files[0];
-          const arrayBuffer = await videoFile.arrayBuffer();
-          audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        } else if (youtubeInput.value.trim()) {
-          // YouTube video
-          audioBuffer = await captureYouTubeAudio(audioContext);
-        } else {
-          throw new Error('No video source selected.');
+      // Set up MediaRecorder to capture canvas
+      const stream = canvas.captureStream(30); // 30 fps
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunks.push(event.data);
         }
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        downloadButton.style.display = 'block';
+        downloadButton.onclick = () => {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'video_with_subtitles.webm';
+          a.click();
+          URL.revokeObjectURL(url);
+        };
+        status.textContent = 'Subtitles generated and video recorded. Click "Download Video with Subtitles" to save.';
+      };
 
-        // Convert audio buffer to WAV format
-        const wavBuffer = audioBufferToWav(audioBuffer);
-        const recognizer = new model.Recognizer({ sampleRate: audioBuffer.sampleRate });
+      // Render video and subtitles on canvas
+      function renderFrame() {
+        if (!isProcessing) return;
+        ctx.drawImage(videoPlayer, 0, 0, canvas.width, canvas.height);
+        const currentTime = videoPlayer.currentTime;
+        const activeSubtitle = subtitles.find(sub => currentTime >= sub.start && currentTime <= sub.end);
+        if (activeSubtitle) {
+          ctx.font = '24px Arial';
+          ctx.fillStyle = 'white';
+          ctx.strokeStyle = 'black';
+          ctx.lineWidth = 2;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.strokeText(activeSubtitle.text, canvas.width / 2, canvas.height - 20);
+          ctx.fillText(activeSubtitle.text, canvas.width / 2, canvas.height - 20);
+        }
+        requestAnimationFrame(renderFrame);
+      }
 
-        // Process audio in chunks
-        const chunkSize = 1024 * 1024; // 1MB chunks
-        let offset = 0;
-        let currentTime = 0;
-        const totalChunks = Math.ceil(wavBuffer.length / chunkSize);
-
-        while (offset < wavBuffer.length) {
-          const chunk = wavBuffer.slice(offset, offset + chunkSize);
-          recognizer.acceptWaveform(chunk);
-          const result = recognizer.result();
-          if (result.text) {
-            const startTime = currentTime;
-            const endTime = currentTime + 2; // Approximate duration per subtitle
-            subtitles.push({ start: startTime, end: endTime, text: result.text });
-            addSubtitleToTrack(track, startTime, endTime, result.text);
-            currentTime += 2;
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            const startTime = videoPlayer.currentTime;
+            const endTime = startTime + 2; // Approximate duration for each subtitle
+            subtitles.push({ start: startTime, end: endTime, text: transcript });
+            addSubtitleToTrack(track, startTime, endTime, transcript);
+          } else {
+            interimTranscript += transcript;
           }
-          offset += chunkSize;
-          progressBar.value = (offset / wavBuffer.length) * 100;
         }
+      };
 
-        recognizer.finalize();
-        status.textContent = 'Subtitles generated successfully!';
-        generateVTTFile();
-        // Play the video (local or YouTube)
-        if (videoInput.files[0]) {
-          videoPlayer.play();
-        } else {
-          player.playVideo();
-        }
-      } catch (error) {
-        status.textContent = `Error processing audio: ${error.message}`;
-      } finally {
+      recognition.onerror = (event) => {
+        status.textContent = `Error in speech recognition: ${event.error}`;
         isProcessing = false;
         processButton.disabled = false;
-        progressBar.style.display = 'none';
-        audioContext.close();
+        mediaRecorder.stop();
+      };
+
+      recognition.onend = () => {
+        if (isProcessing) {
+          recognition.start(); // Restart recognition if still processing
+        }
+      };
+
+      try {
+        videoPlayer.play();
+        recognition.start();
+        mediaRecorder.start();
+        renderFrame();
+
+        videoPlayer.onended = () => {
+          recognition.stop();
+          mediaRecorder.stop();
+          isProcessing = false;
+          processButton.disabled = false;
+          generateVTTFile();
+        };
+      } catch (error) {
+        status.textContent = `Error: ${error.message}`;
+        isProcessing = false;
+        processButton.disabled = false;
+        mediaRecorder.stop();
       }
     });
-
-    // Capture audio from YouTube video
-    async function captureYouTubeAudio(audioContext) {
-      return new Promise((resolve, reject) => {
-        const stream = videoContainer.captureStream ? videoContainer.captureStream() : videoContainer.mozCaptureStream();
-        const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        const samples = [];
-
-        processor.onaudioprocess = (event) => {
-          const channelData = event.inputBuffer.getChannelData(0);
-          samples.push(new Float32Array(channelData));
-        };
-
-        source.connect(processor);
-        processor.connect(audioContext.destination);
-
-        player.playVideo();
-        setTimeout(() => {
-          player.pauseVideo();
-          processor.disconnect();
-          source.disconnect();
-          const audioBuffer = audioContext.createBuffer(1, samples.length * 4096, audioContext.sampleRate);
-          const channel = audioBuffer.getChannelData(0);
-          for (let i = 0; i < samples.length; i++) {
-            channel.set(samples[i], i * 4096);
-          }
-          resolve(audioBuffer);
-        }, 5000); // Capture 5 seconds for demo; adjust for full video duration
-      });
-    }
 
     // Add subtitle to text track
     function addSubtitleToTrack(track, start, end, text) {
       track.addCue(new VTTCue(start, end, text));
     }
 
-    // Generate and download VTT file
+    // Generate and apply VTT file for video player
     function generateVTTFile() {
       let vttContent = 'WEBVTT\n\n';
       subtitles.forEach(sub => {
@@ -254,44 +202,6 @@
       const secs = Math.floor(seconds % 60);
       const millis = Math.floor((seconds % 1) * 1000);
       return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${millis.toString().padStart(3, '0')}`;
-    }
-
-    // Convert AudioBuffer to WAV
-    function audioBufferToWav(buffer) {
-      const numChannels = buffer.numberOfChannels;
-      const sampleRate = buffer.sampleRate;
-      const length = buffer.length * numChannels * 2 + 44;
-      const arrayBuffer = new ArrayBuffer(length);
-      const view = new DataView(arrayBuffer);
-
-      // Write WAV header
-      writeString(view, 0, 'RIFF');
-      view.setUint32(4, length - 8, true);
-      writeString(view, 8, 'WAVE');
-      writeString(view, 12, 'fmt ');
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true); // PCM format
-      view.setUint16(22, numChannels, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * numChannels * 2, true);
-      view.setUint16(32, numChannels * 2, true);
-      view.setUint16(34, 16, true);
-      writeString(view, 36, 'data');
-      view.setUint32(40, buffer.length * numChannels * 2, true);
-
-      // Write PCM data
-      const channelData = buffer.getChannelData(0);
-      for (let i = 0; i < buffer.length; i++) {
-        view.setInt16(44 + i * 2, channelData[i] * 0x7FFF, true);
-      }
-
-      return arrayBuffer;
-    }
-
-    function writeString(view, offset, string) {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
     }
   </script>
 </body>
